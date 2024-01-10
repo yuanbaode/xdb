@@ -15,15 +15,20 @@ import (
 )
 
 const structTemplate = `
-package .Package
+package {{.Package}}
 
 
-// {{.TableName | title}} 表结构体
-type {{.TableName | title}} struct {
-	{{range .Columns}}
-	
-	{{.Field | title}} {{.Type}}{{.GormTag}} ` + "`json:\"{{.Field}}\"`" + `{{if .Comment}}// {{.Comment}}{{end}} {{end}}
 
+// {{.StructName}} struct is a row record of the {{.TableName}} table in the {{.DatabaseName}} database
+type {{.StructName}} struct {
+    {{range .Columns}}{{.CamelCase | title}} {{.Type}} ` + "`gorm:\"{{.GormTag}}\" " + "json:\"{{.Field}}\"`" + `{{if .Comment}}// {{.Comment}}{{end}} 
+    {{end}}
+}
+
+const tableName{{.StructName}} = "{{.TableName}}"
+// TableName sets the insert table name for this struct type
+func (p {{.StructName}}) TableName() string {
+	return tableName{{.StructName}}
 }
 `
 
@@ -105,17 +110,22 @@ func generateStruct(db *sql.DB, tableName, database, dir, packageName string) (e
 	rows.Close()
 	for i, _ := range columns {
 		columns[i].Comment = getColumnComment(db, tableName, database, columns[i].Field)
-		columns[i].GormTag = columns[i].getGormTag()
 	}
-	tb := TableInfo{
-		TableName: tableName,
-		Columns:   columns,
-		Package:   packageName,
-		Dir:       dir,
+	structFields := make([]StructField, 0, len(columns))
+	for _, column := range columns {
+		structFields = append(structFields, column.GetStructField())
+	}
+	tb := Struct{
+		DatabaseName: database,
+		StructName:   toCamelCase(tableName),
+		TableName:    tableName,
+		Columns:      structFields,
+		Package:      packageName,
+		Dir:          dir,
 	}
 	_ = tb
-	generateFile(tableName, packageName, dir, columns)
-	//generateFileWithTmpl(tb)
+	//generateFile(tableName, packageName, dir, columns)
+	generateFileWithTmpl(tb)
 	return
 }
 
@@ -138,7 +148,7 @@ func generateFile(tableName, packageName, dir string, columns []Column) {
 	defer file.Close()
 	file.WriteString(s)
 }
-func generateFileWithTmpl(tb TableInfo) {
+func generateFileWithTmpl(tb Struct) {
 	fileName := tb.TableName + ".go"
 	if tb.Dir != "" {
 		if _, err := os.Stat(tb.Dir); os.IsNotExist(err) {
@@ -160,11 +170,13 @@ func generateFileWithTmpl(tb TableInfo) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	err = tmpl.Execute(file, tb)
+	buffer := bytes.NewBuffer([]byte{})
+	err = tmpl.Execute(buffer, tb)
 	if err != nil {
 		log.Fatal(err)
 	}
+	source, _ := format.Source(buffer.Bytes())
+	file.Write(source)
 }
 func getColumnComment(db *sql.DB, tableName, database, columnName string) string {
 	var columnComment sql.NullString
@@ -177,11 +189,13 @@ func getColumnComment(db *sql.DB, tableName, database, columnName string) string
 	return columnComment.String
 }
 
-type TableInfo struct {
-	TableName string
-	Columns   []Column
-	Package   string
-	Dir       string
+type Struct struct {
+	DatabaseName string
+	StructName   string
+	TableName    string
+	Columns      []StructField
+	Package      string
+	Dir          string
 }
 
 type Column struct {
@@ -193,6 +207,25 @@ type Column struct {
 	Extra   string
 	Comment string
 	GormTag string
+}
+
+func (c *Column) GetStructField() StructField {
+	sf := StructField{
+		CamelCase: toCamelCase(c.Field),
+		Field:     c.Field,
+		Type:      mysqlTypeToGoType(c.Type, c.Null),
+		Comment:   c.Comment,
+		GormTag:   c.getGormTag(),
+	}
+	return sf
+}
+
+type StructField struct {
+	Field     string
+	CamelCase string
+	Type      string
+	Comment   string
+	GormTag   string
 }
 
 // getGormTag 用于生成gorm tag
